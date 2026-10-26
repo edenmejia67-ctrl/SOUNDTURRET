@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sound Sentry – 3D Circuit Simulator</title>
+<meta name="description" content="Interactive 3D circuit simulator of Sound Sentry, an ESP32 smart noise monitor with a MAX4466 microphone, LED indicators, buzzer and SD card logging. Sensor values are simulated.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232563eb'/%3E%3Cpath d='M7 16h3l3-8 4 16 3-8h5' fill='none' stroke='%23fff' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+:root{--bg:#eef1f5;--pn:#fff;--tx:#1b2430;--mu:#5d6b7c;--ac:#2563eb;--bd:#d5dbe3;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f141b;--pn:#18202a;--tx:#e6ebf2;--mu:#93a1b3;--ac:#5b9dff;--bd:#2b3644}}
+:root[data-theme="dark"]{--bg:#0f141b;--pn:#18202a;--tx:#e6ebf2;--mu:#93a1b3;--ac:#5b9dff;--bd:#2b3644}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--tx);font:14px/1.4 system-ui,-apple-system,Segoe UI,sans-serif;display:flex}
+main{flex:1;min-width:0;position:relative}
+canvas#c{width:100%;height:100%;display:block;touch-action:none;cursor:grab}
+#hud{position:absolute;left:10px;top:10px;background:var(--pn);border:1px solid var(--bd);border-radius:8px;padding:6px 10px;font-size:12px;color:var(--mu);max-width:60%}
+aside{width:280px;background:var(--pn);border-left:1px solid var(--bd);padding:14px;overflow:auto;display:flex;flex-direction:column;gap:8px}
+h1{font-size:18px;margin:0}.mu{color:var(--mu);font-size:12px;margin:0}
+label{display:block}input[type=range]{width:100%}
+.row{display:flex;gap:6px;flex-wrap:wrap}
+button{flex:1;background:var(--bg);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:7px 8px;cursor:pointer;font:inherit}
+button.on{background:var(--ac);color:#fff;border-color:var(--ac)}
+table{width:100%;border-collapse:collapse;font-size:12px}th,td{border-bottom:1px solid var(--bd);padding:3px;text-align:center}
+.card{background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:8px;font-size:12px}
+#csv{position:fixed;inset:0;background:#0008;display:flex;align-items:center;justify-content:center;z-index:9}
+#csv[hidden]{display:none}#csv div{background:var(--pn);padding:14px;border-radius:10px;width:min(480px,92vw);display:flex;flex-direction:column;gap:8px}
+textarea{height:220px;background:var(--bg);color:var(--tx);border:1px solid var(--bd);border-radius:6px;font:12px monospace}
+@media (max-width:760px){body{flex-direction:column}aside{width:auto;max-height:46%;border-left:0;border-top:1px solid var(--bd)}}
+</style></head><body>
+<main><canvas id="c"></canvas><div id="hud">Drag to rotate · scroll to zoom · click parts for info · click the laptop to look at its screen</div></main>
+<aside>
+<h1>Sound Sentry</h1><p class="mu">ESP32 smart noise monitor – 3D circuit simulator. Sensor values are simulated.</p>
+<div class="row"><button id="bpre">Pretest (manual)</button><button id="bpost" class="on">Posttest (Sound Sentry)</button></div>
+<label>Room noise: <b id="dbv">45</b> dB<input type="range" id="db" min="30" max="100" value="45"></label>
+<label>Threshold: <b id="thv">65</b> dB<input type="range" id="th" min="50" max="85" value="65"></label>
+<label><input type="checkbox" id="auto"> Auto scenario (students talking)</label>
+<label><input type="checkbox" id="mic"> Fault: microphone blocked</label>
+<label><input type="checkbox" id="sd"> Fault: SD card missing</label>
+<div class="row"><button id="blap">Laptop view</button><button id="brst">Reset view</button><button id="bcsv">Export CSV</button></div>
+<div id="stat" class="card"></div>
+<div id="info" class="card">Click any part in the 3D scene to see what it does and how it is wired.</div>
+<p class="mu">Pretest simulates a person noticing noise by ear; posttest uses the device. Values are simulated, so use real trial data for the paper.</p>
+</aside>
+<div id="csv" hidden><div><b>Log as CSV</b><span class="mu">Copy, then paste into Excel or Notepad and save as .csv</span><textarea id="ta" readonly></textarea><div class="row"><button id="bcp">Copy</button><button id="bcl">Close</button></div></div></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const dark=matchMedia("(prefers-color-scheme: dark)").matches;
+const cv=$("c"),wrap=cv.parentElement;
+const R=new THREE.WebGLRenderer({canvas:cv,antialias:true});
+R.setPixelRatio(Math.min(devicePixelRatio,2));R.shadowMap.enabled=true;R.shadowMap.type=THREE.PCFSoftShadowMap;
+R.toneMapping=THREE.ACESFilmicToneMapping;R.toneMappingExposure=1.15;
+const S=new THREE.Scene();S.background=new THREE.Color(dark?0x0f141b:0xdfe6ee);S.fog=new THREE.Fog(S.background,35,70);
+const cam=new THREE.PerspectiveCamera(45,1,.1,120);
+S.add(new THREE.HemisphereLight(0xffffff,0x556677,.75));
+const Ld=new THREE.DirectionalLight(0xffffff,.9);Ld.position.set(8,14,9);Ld.castShadow=true;Ld.shadow.mapSize.set(2048,2048);Ld.shadow.bias=-.0004;
+Object.assign(Ld.shadow.camera,{left:-16,right:16,top:16,bottom:-16});S.add(Ld);
+/* helpers */
+const M=(c,r=.6,m=0)=>new THREE.MeshStandardMaterial({color:c,roughness:r,metalness:m});
+const V=(x,y,z)=>new THREE.Vector3(x,y,z);
+const pk=[];
+function put(o,x,y,z,sh=true){o.position.set(x,y,z);o.castShadow=o.receiveShadow=sh;S.add(o);return o}
+const box=(w,h,d,m,x,y,z,sh)=>put(new THREE.Mesh(new THREE.BoxGeometry(w,h,d),m),x,y,z,sh);
+const cyl=(r,h,m,x,y,z)=>put(new THREE.Mesh(new THREE.CylinderGeometry(r,r,h,24),m),x,y,z);
+const sph=(r,m,x,y,z)=>put(new THREE.Mesh(new THREE.SphereGeometry(r,20,16),m),x,y,z);
+const T=(n,t,...ms)=>ms.forEach(o=>{o.userData.i=[n,t];pk.push(o)});
+function lab(t,x,y,z){const c=document.createElement("canvas");c.width=256;c.height=64;const q=c.getContext("2d");q.fillStyle="rgba(20,28,40,.85)";q.fillRect(0,0,256,64);q.fillStyle="#fff";q.font="bold 28px sans-serif";q.textAlign="center";q.fillText(t,128,42);
+const s=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c),depthTest:false}));s.position.set(x,y,z);s.scale.set(2.2,.55,1);s.renderOrder=5;S.add(s)}
+function W(a,b,c,lift){const m=a.clone().add(b).multiplyScalar(.5);m.y+=lift;S.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.QuadraticBezierCurve3(a,m,b),24,.04,6),new THREE.MeshBasicMaterial({color:c})))}
+/* room */
+box(70,.5,50,M(dark?0x2a323d:0xb9c2cc,.9),0,-4.25,-6);
+box(70,16,.4,M(dark?0x3a4452:0xe7e2d6,.9),0,4,-12,false);
+box(18,.5,9,M(0x9a6b3f,.75),0,-.25,1);
+[[-8.5,-2.8],[8.5,-2.8],[-8.5,4.8],[8.5,4.8]].forEach(p=>box(.5,3.8,.5,M(0x7a522f,.8),p[0],-2.15,p[1]));
+const bc=[0xc0392b,0x2980b9,0x27ae60,0xf39c12,0x8e44ad,0x16a085];
+for(let r=0;r<3;r++){box(24,.2,1.2,M(0x6b4a2b,.8),0,2.4+r*2.6,-11.3,false);for(let i=0;i<22;i++)box(.6,1.8,.9,M(bc[(i*7+r*3)%6],.7),-10.5+i*.97,3.4+r*2.6,-11.3,false)}
+/* students */
+box(9,.25,2.5,M(0xc9a36e,.7),-2,1.4,-7);box(9,1.3,.2,M(0xb08850,.7),-2,.7,-8.1);
+const heads=[],sc3=[0x3b82f6,0xf59e0b,0xec4899];
+sc3.forEach((c,i)=>{const x=-5+i*3,b=cyl(.5,1.8,M(c,.6),x,2.5,-7.9),h=sph(.5,M(0xf1c27d,.6),x,3.8,-7.9);heads.push(h);T("Students","Simulated noise source. They get louder as the room noise slider rises.",b,h)});
+/* breadboard + parts */
+const bb=box(8,.3,3,M(0xf3efe6,.5),-4,.15,2);T("Breadboard","Joins the parts without soldering. Rails: 3V3/5V (red) and common GND (black).",bb);
+const esp=box(2.6,.2,1.3,M(0x1a1a1f,.4,.3),-6.5,.45,2);const ant=box(.8,.08,1.1,M(0xd4af37,.3,.8),-7.4,.58,2);
+T("ESP32 (main controller)","Reads the mic on GPIO34 (ADC1), logs to SD over SPI (CS5, SCK18, MISO19, MOSI23) and drives the LEDs (25, 26, 27) and buzzer (32). Powered by USB.",esp,ant);
+const mic=box(1.4,.12,1,M(0x1f4fb0,.4),-4.2,.4,2);const mc=cyl(.25,.22,M(0xcfd5dc,.3,.9),-4.2,.55,1.9);
+T("MAX4466 microphone","Analog sound sensor. VCC to 3V3, GND to GND, OUT to GPIO34. Not calibrated, so the dB value is an estimate unless checked against a sound level meter.",mic,mc);
+const sd=box(1.8,.12,1.4,M(0x1f4fb0,.4),-2.2,.4,2);const cd=box(.9,.06,1,M(0x333a45,.4,.4),-1.7,.5,2.7);
+T("MicroSD module","Stores the readings as CSV. VCC to 5V, GND to GND, CS to GPIO5, SCK to 18, MISO to 19, MOSI to 23. Format the card FAT32.",sd,cd);
+const leds=[[0x22c55e,.9,"Green LED","Quiet. GPIO25 through a 220 ohm resistor to GND."],[0xfacc15,1.5,"Yellow LED","Caution. GPIO26 through a 220 ohm resistor to GND."],[0xef4444,2.1,"Red LED","Warning, over threshold. GPIO27 through a 220 ohm resistor to GND."]].map(a=>{
+ const m=M(a[0],.25);m.emissive.setHex(0);cyl(.14,.3,M(0xdddddd,.4),-.8,.45,a[1]);const s=sph(.2,m,-.8,.7,a[1]);T(a[2],a[3],s);return{m,c:a[0]}});
+const bz=cyl(.45,.5,M(0x15151a,.4),-.6,.55,3);T("Active buzzer","Sounds when noise is over the threshold. Signal on GPIO32, other leg to GND.",bz);
+[["ESP32",-6.5,2.6],["MAX4466",-4.2,2.8],["SD module",-2.2,3],["LEDs",-.8,3.7]].forEach(l=>lab(l[0],l[1],1.9,l[2]));
+[[-5.3,1.5,-4.6,1.6,0xef4444,.5],[-5.3,1.8,-4.2,1.6,0x111111,.7],[-5.3,2.4,-3.8,2.4,0xffa500,.9],
+ [-5.3,2.55,-2.9,1.6,0xef4444,1],[-5.3,2.2,-2.7,1.7,0x111111,1.1],[-6,2.65,-2.6,2.6,0x3b82f6,1.3],[-5.8,2.65,-2.4,2.6,0x22c55e,1.5],[-5.6,2.65,-2.2,2.6,0xffffff,1.7],[-5.4,2.65,-2,2.6,0xa855f7,1.9],
+ [-7,2.65,-.8,.9,0x22c55e,2.6],[-6.8,2.65,-.8,1.5,0xfacc15,2.4],[-6.6,2.65,-.8,2.1,0xef4444,2.2],[-7.2,2.65,-.6,3,0xf97316,2.8]]
+ .forEach(w=>W(V(w[0],.5,w[1]),V(w[2],.5,w[3]),w[4],w[5]));
+/* laptop */
+const lap=new THREE.Group();lap.position.set(5.2,0,.6);lap.rotation.y=-.4;S.add(lap);
+const bs=new THREE.Mesh(new THREE.BoxGeometry(6,.2,4),M(0x8a929c,.4,.7));bs.position.y=.1;bs.castShadow=true;lap.add(bs);
+const kb=new THREE.Mesh(new THREE.BoxGeometry(5.2,.04,2),M(0x20252b,.6));kb.position.set(0,.22,.3);lap.add(kb);
+const piv=new THREE.Group();piv.position.set(0,.2,-1.9);piv.rotation.x=-.2;lap.add(piv);
+const lid=new THREE.Mesh(new THREE.BoxGeometry(6,3.9,.12),M(0x6f7782,.4,.7));lid.position.y=1.95;lid.castShadow=true;piv.add(lid);
+const sc2=document.createElement("canvas");sc2.width=640;sc2.height=400;const g=sc2.getContext("2d");const tex=new THREE.CanvasTexture(sc2);
+const scrP=new THREE.Mesh(new THREE.PlaneGeometry(5.6,3.5),new THREE.MeshBasicMaterial({map:tex,toneMapped:false}));scrP.position.set(0,1.95,.07);piv.add(scrP);
+T("Laptop","LAPTOP",scrP);scrP.userData.i="LAPTOP";
+/* state */
+let mode="post",rd=45,dbT=45,hist=[],log=[],ev=null,dirty=true,tgt=45,nextT=0,lastS=0,lastL=0,foc=false,mx=0,my=0;
+const ST={pre:{ev:0,det:0,rt:[]},post:{ev:0,det:0,rt:[]}};
+const thr=()=>+$("th").value,lvl=r=>r>thr()?2:r>thr()-10?1:0,NM=["QUIET","CAUTION","WARNING"],CL=["#16a34a","#ca8a04","#dc2626"];
+function sample(now){
+ dbT=$("auto").checked?(now>nextT&&(tgt=40+Math.random()*50,nextT=now+2500+Math.random()*3000),dbT+(tgt-dbT)*.12):+$("db").value;
+ if($("auto").checked)$("db").value=dbT;$("dbv").textContent=Math.round(dbT);$("thv").textContent=thr();
+ rd=$("mic").checked?28+Math.random()*3:Math.min(110,Math.max(25,dbT+(Math.random()-.5)*3));
+ hist.push(rd);if(hist.length>80)hist.shift();
+ const over=dbT>thr(),s=ST[mode];
+ if(over&&!ev){ev={t:now,need:mode==="pre"?(Math.random()<.4?1e9:2500+Math.random()*6000):0,done:false};s.ev++}
+ if(!over)ev=null;
+ if(ev&&!ev.done&&(mode==="post"?rd>thr():now-ev.t>=ev.need)){ev.done=true;s.det++;s.rt.push(now-ev.t+(mode==="post"?40:0))}
+ if(now-lastL>=1000){lastL=now;if(mode==="post"&&!$("sd").checked)log.push([Math.round(now/1000),rd.toFixed(1),NM[lvl(rd)]])}
+ dirty=true;ust()}
+function ust(){const r=k=>{const s=ST[k];return"<td>"+s.ev+"</td><td>"+s.det+"</td><td>"+(s.ev?Math.round(s.det/s.ev*100):0)+"%</td><td>"+(s.rt.length?Math.round(s.rt.reduce((a,b)=>a+b)/s.rt.length)+" ms":"–")+"</td>"};
+ $("stat").innerHTML="<table><tr><th></th><th>Events</th><th>Caught</th><th>Rate</th><th>Avg response</th></tr><tr><th>Pre</th>"+r("pre")+"</tr><tr><th>Post</th>"+r("post")+"</tr></table><div class='mu'>Now: "+rd.toFixed(1)+" dB · "+NM[lvl(rd)]+" · "+log.length+" rows logged</div>"}
+function scr(){
+ g.fillStyle="#fff";g.fillRect(0,0,640,400);g.fillStyle="#217346";g.fillRect(0,0,640,26);g.fillStyle="#fff";g.font="bold 14px sans-serif";g.fillText("SoundSentry_log.csv – Excel",10,18);
+ g.font="12px sans-serif";const cx=[0,28,98,153],cw=[28,70,55,100];g.fillStyle="#e8ebef";g.fillRect(0,26,253,20);
+ ["","A","B","C"].forEach((t,i)=>{g.fillStyle="#444";g.fillText(t,cx[i]+30,41)});
+ const rows=[["Time (s)","dB","Status"]].concat(log.slice(-14));
+ rows.forEach((r,j)=>{const y=46+j*20;g.fillStyle="#e8ebef";g.fillRect(0,y,28,20);g.fillStyle="#444";g.fillText(j+1,8,y+14);
+  r.forEach((v,i)=>{g.strokeStyle="#d0d5db";g.strokeRect(cx[i+1],y,cw[i+1],20);g.fillStyle=j&&i===2?CL[NM.indexOf(v)]:(j?"#111":"#000");g.font=(j?"":"bold ")+"12px sans-serif";g.fillText(v,cx[i+1]+5,y+14)})});
+ const x0=300,x1=625,y0=70,y1=290,Y=v=>y1-(v-30)/70*(y1-y0);
+ g.fillStyle="#111";g.font="bold 13px sans-serif";g.fillText("Noise level (dB), last 8 s",x0,55);g.strokeStyle="#bbb";g.strokeRect(x0,y0,x1-x0,y1-y0);
+ g.font="10px sans-serif";g.fillStyle="#666";[30,50,70,90].forEach(v=>{g.fillText(v,x0-20,Y(v)+3);g.strokeStyle="#eee";g.beginPath();g.moveTo(x0,Y(v));g.lineTo(x1,Y(v));g.stroke()});
+ g.strokeStyle="#dc2626";g.setLineDash([5,4]);g.beginPath();g.moveTo(x0,Y(thr()));g.lineTo(x1,Y(thr()));g.stroke();g.setLineDash([]);
+ g.strokeStyle="#2563eb";g.lineWidth=2;g.beginPath();hist.forEach((v,i)=>{const x=x0+i/79*(x1-x0);i?g.lineTo(x,Y(v)):g.moveTo(x,Y(v))});g.stroke();g.lineWidth=1;
+ g.fillStyle=CL[lvl(rd)];g.font="bold 34px sans-serif";g.fillText(rd.toFixed(1)+" dB",x0,335);g.font="bold 16px sans-serif";g.fillText(NM[lvl(rd)]+" (limit "+thr()+" dB)",x0,360);
+ if($("sd").checked){g.fillStyle="#dc2626";g.fillRect(0,372,640,28);g.fillStyle="#fff";g.font="bold 14px sans-serif";g.fillText("⚠ SD card not detected – logging stopped",12,391)}
+ if($("mic").checked){g.fillStyle="#ca8a04";g.fillRect(0,344,253,22);g.fillStyle="#fff";g.font="bold 12px sans-serif";g.fillText("⚠ Mic reading near zero – blocked?",8,359)}
+ if(mode==="pre"){g.fillStyle="rgba(40,40,40,.82)";g.fillRect(0,26,640,374);g.fillStyle="#fff";g.font="bold 22px sans-serif";g.fillText("SYSTEM OFF – Pretest",190,200);g.font="14px sans-serif";g.fillText("Noise is only noticed by ear (manual observation)",150,228)}
+ tex.needsUpdate=true}
+/* camera */
+let th=.35,ph=1.12,r0=19;const tg=V(0,1.6,0),base=V(0,1.6,0);
+function setFoc(f){foc=f;$("blap").classList.toggle("on",f);$("hud").textContent=f?"Move the mouse to look around the screen · Esc or ‘Reset view’ to leave":"Drag to rotate · scroll to zoom · click parts for info · click the laptop to look at its screen"}
+function updCam(){let w,l;
+ if(foc){l=new THREE.Vector3();scrP.getWorldPosition(l);const n=new THREE.Vector3();scrP.getWorldDirection(n);w=l.clone().add(n.multiplyScalar(5.4)).add(V(mx*.9,my*.5,0))}
+ else{l=base;w=base.clone().add(V(r0*Math.sin(ph)*Math.sin(th),r0*Math.cos(ph),r0*Math.sin(ph)*Math.cos(th)))}
+ cam.position.lerp(w,.09);tg.lerp(l,.12);cam.lookAt(tg)}
+let dn=false,dx0=0,dy0=0,lx=0,ly=0;
+cv.addEventListener("pointerdown",e=>{dn=true;dx0=lx=e.clientX;dy0=ly=e.clientY});
+addEventListener("pointerup",()=>dn=false);
+cv.addEventListener("pointermove",e=>{const b=cv.getBoundingClientRect();mx=(e.clientX-b.left)/b.width*2-1;my=-((e.clientY-b.top)/b.height*2-1);
+ if(dn&&!foc){th-=(e.clientX-lx)*.006;ph=Math.min(1.5,Math.max(.4,ph-(e.clientY-ly)*.005))}lx=e.clientX;ly=e.clientY});
+cv.addEventListener("wheel",e=>{e.preventDefault();r0=Math.min(32,Math.max(7,r0+e.deltaY*.01))},{passive:false});
+const ray=new THREE.Raycaster(),m2=new THREE.Vector2();
+cv.addEventListener("pointerup",e=>{if(Math.hypot(e.clientX-dx0,e.clientY-dy0)>5)return;const b=cv.getBoundingClientRect();
+ m2.set((e.clientX-b.left)/b.width*2-1,-((e.clientY-b.top)/b.height)*2+1);ray.setFromCamera(m2,cam);const h=ray.intersectObjects(pk)[0];if(!h)return;
+ const i=h.object.userData.i;if(i==="LAPTOP"){setFoc(!foc);return}$("info").innerHTML="<b>"+i[0]+"</b><br>"+i[1]});
+addEventListener("keydown",e=>{if(e.key==="Escape")setFoc(false)});
+/* ui */
+function setMode(m){mode=m;ev=null;$("bpre").classList.toggle("on",m==="pre");$("bpost").classList.toggle("on",m==="post");dirty=true}
+$("bpre").onclick=()=>setMode("pre");$("bpost").onclick=()=>setMode("post");
+$("blap").onclick=()=>setFoc(!foc);$("brst").onclick=()=>{setFoc(false);th=.35;ph=1.12;r0=19};
+$("bcsv").onclick=()=>{$("ta").value="time_s,db,status\n"+log.map(r=>r.join(",")).join("\n");$("csv").hidden=false};
+$("bcl").onclick=()=>$("csv").hidden=true;
+$("bcp").onclick=()=>{$("ta").select();try{navigator.clipboard.writeText($("ta").value)}catch(e){document.execCommand("copy")}};
+["th","sd","mic"].forEach(i=>$(i).addEventListener("input",()=>dirty=true));
+function rs(){const w=wrap.clientWidth,h=wrap.clientHeight;R.setSize(w,h,false);cam.aspect=w/h;cam.updateProjectionMatrix()}
+addEventListener("resize",rs);rs();cam.position.set(6,10,20);
+/* loop */
+function frame(t){requestAnimationFrame(frame);
+ if(t-lastS>=100){lastS=t;sample(t)}
+ const sys=mode==="post",l=lvl(rd);
+ leds.forEach((o,i)=>o.m.emissive.setHex(sys&&l===i?o.c:0));
+ bz.material.emissive.setHex(sys&&l===2&&Math.sin(t/70)>0?0xff2222:0);bz.scale.setScalar(sys&&l===2&&Math.sin(t/70)>0?1.12:1);
+ const it=Math.max(0,(dbT-45)/40);heads.forEach((h,i)=>h.scale.y=1+.14*it*Math.sin(t/80+i*2));
+ if(dirty){scr();dirty=false}
+ updCam();R.render(S,cam)}
+ust();requestAnimationFrame(frame);
+</script></body></html>
